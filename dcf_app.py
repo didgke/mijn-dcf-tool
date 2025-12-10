@@ -9,11 +9,11 @@ import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# --- CONFIGURATIE ---
+# --- CONFIGURATION ---
 st.set_page_config(page_title="DCF Valuation Pro", layout="wide")
 
-# --- FUNCTIE: SILENT SAVE ---
-def silent_save_to_hq(bedrijf, ticker, waarde, upside, json_data):
+# --- FUNCTION: SILENT SAVE (Google Sheets) ---
+def silent_save_to_hq(company, ticker, value, upside, json_data):
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -23,8 +23,8 @@ def silent_save_to_hq(bedrijf, ticker, waarde, upside, json_data):
         
         row = [
             str(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-            str(bedrijf),
-            f"€ {waarde:.2f}",
+            str(company),
+            f"€ {value:.2f}",
             str(ticker),
             f"{upside:.1%}",
             str(json_data)
@@ -34,32 +34,54 @@ def silent_save_to_hq(bedrijf, ticker, waarde, upside, json_data):
     except:
         return False
 
-# --- PDF FUNCTIE ---
-def create_pdf(bedrijf, datum, inputs, resultaten, df_projectie):
+# --- FUNCTION: PDF GENERATION ---
+def create_pdf(company, date, inputs, results, df_projectie):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, f"Waarderingsrapport: {bedrijf}", ln=True, align='C')
+    pdf.cell(0, 10, f"Valuation Report: {company}", ln=True, align='C')
     pdf.set_font("Arial", 'I', 10)
-    pdf.cell(0, 10, f"Datum analyse: {datum}", ln=True, align='C')
+    pdf.cell(0, 10, f"Analysis Date: {date}", ln=True, align='C')
     pdf.ln(10)
-    # ... (Verkorte weergave voor PDF logica, blijft identiek) ...
-    pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, "1. Resultaten", ln=True); pdf.set_font("Arial", '', 10)
-    for k, v in resultaten.items(): pdf.cell(100, 8, f"{k}", 0); pdf.cell(50, 8, f"{v}", 0, 1)
-    pdf.ln(5); pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, "3. Projectie", ln=True); pdf.set_font("Arial", 'B', 7)
-    headers = ["Jaar", "Groei%", "Omzet", "EBIT%", "FCFF", "PV FCFF"]
+    
+    # Results Section
+    pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, "1. Valuation Results", ln=True); pdf.set_font("Arial", '', 10)
+    for k, v in results.items(): pdf.cell(100, 8, f"{k}", 0); pdf.cell(50, 8, f"{v}", 0, 1)
+    pdf.ln(5)
+    
+    # Parameters Section
+    pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, "2. Key Assumptions", ln=True); pdf.set_font("Arial", '', 9)
+    # Print simple list of inputs
+    for k, v in inputs.items():
+        if "dyn_" not in k: # Skip internal dynamic keys for cleaner PDF
+            pdf.cell(90, 6, f"{k}: {v}", border=0); pdf.ln()
+    pdf.ln(5)
+    
+    # Projection Table
+    pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, "3. Projections", ln=True); pdf.set_font("Arial", 'B', 7)
+    headers = ["Year", "Growth%", "Revenue", "EBIT%", "FCFF", "PV FCFF"]
     col_widths = [15, 15, 25, 15, 25, 25]
     for i, h in enumerate(headers): pdf.cell(col_widths[i], 8, h, 1)
     pdf.ln(); pdf.set_font("Arial", '', 7)
+    
     for index, row in df_projectie.iterrows():
-        vals = [str(int(row['Jaar'])), f"{row['Gebruikte Groei']*100:.1f}%", f"{row['Omzet']:.1f}", f"{row['Gebruikte Marge']*100:.1f}%", f"{row['FCFF']:.1f}", f"{row['PV FCFF']:.1f}"]
+        # Note: We use the English column names here matching the DataFrame below
+        vals = [
+            str(int(row['Year'])), 
+            f"{row['Used Growth']*100:.1f}%", 
+            f"{row['Revenue']:.1f}", 
+            f"{row['Used Margin']*100:.1f}%", 
+            f"{row['FCFF']:.1f}", 
+            f"{row['PV FCFF']:.1f}"
+        ]
         for i, val in enumerate(vals): pdf.cell(col_widths[i], 8, val, border=1)
         pdf.ln()
+    
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- INITIALISATIE SESSION STATE ---
+# --- INITIALIZE SESSION STATE ---
 defaults = {
-    "bedrijfsnaam": "Naamloos Bedrijf", "ticker": "", "projectie_jaren": 10, "basis_omzet": 100.0, 
+    "bedrijfsnaam": "Unnamed Company", "ticker": "", "projectie_jaren": 10, "basis_omzet": 100.0, 
     "ebit_marge": 20.0, "tax_rate": 25.0, "invested_cap": 100.0, "shares": 10.0,
     "target_sales_to_cap": 1.0, "revenue_growth": 5.0, "wacc": 9.0, "debt": 20.0, "cash": 5.0, 
     "margin_safety": 30, "term_growth": 2.0, "term_roic": 15.0,
@@ -69,78 +91,75 @@ defaults = {
 for key, val in defaults.items():
     if key not in st.session_state: st.session_state[key] = val
 
-# --- 1. BESTAND LADEN (BUITEN HET FORMULIER) ---
-st.sidebar.title("Instellingen")
-uploaded_file = st.sidebar.file_uploader("📂 Laad vorige analyse (.json)", type=["json"])
+# --- 1. LOAD FILE (Top of Sidebar) ---
+st.sidebar.title("Settings")
+uploaded_file = st.sidebar.file_uploader("📂 Load previous analysis (.json)", type=["json"])
 
 if uploaded_file is not None:
-    # We voegen een knop toe om het laden te bevestigen, anders blijft hij herladen
-    if st.sidebar.button("⚠️ Pas instellingen toe"):
+    if st.sidebar.button("⚠️ Apply Settings"):
         try:
             data = json.load(uploaded_file)
             for key, value in data.items():
                 st.session_state[key] = value
-            st.sidebar.success("Geladen! De waarden hieronder zijn aangepast.")
-            st.rerun() # Dit dwingt de app te verversen met nieuwe waarden
+            st.sidebar.success("Loaded! Settings applied below.")
+            st.rerun()
         except Exception as e:
-            st.sidebar.error(f"Fout: {e}")
+            st.sidebar.error(f"Error: {e}")
 
 st.sidebar.markdown("---")
 
-# --- 2. FORMULIER MET INPUTS ---
-# Alles in dit blok wordt pas verwerkt als je op 'Bereken' klikt
+# --- 2. INPUT FORM ---
 with st.sidebar.form(key='dcf_form'):
     
-    st.header("1. Bedrijf")
-    # We gebruiken st.session_state[...] als VALUE, zodat ze updaten na file upload
-    bedrijfsnaam = st.text_input("Naam", value=st.session_state['bedrijfsnaam'])
+    st.header("1. Company Profile")
+    bedrijfsnaam = st.text_input("Company Name", value=st.session_state['bedrijfsnaam'])
     ticker_symbol = st.text_input("Ticker (Yahoo)", value=st.session_state['ticker'])
-    analyse_datum = st.date_input("Datum", datetime.date.today())
+    analyse_datum = st.date_input("Analysis Date", datetime.date.today())
 
-    st.header("2. Projectie")
-    projectie_jaren = st.slider("Jaren", 5, 30, value=st.session_state['projectie_jaren'])
-    omzet_groei = st.number_input("Basis Groei %", step=0.1, value=st.session_state['revenue_growth']) / 100
-    with st.expander("Dynamische Groei"):
-        dyn_groei_start = st.number_input("Startjaar", min_value=1, value=st.session_state['dyn_groei_start'])
-        dyn_groei_delta = st.number_input("Correctie %", step=0.1, value=st.session_state['dyn_groei_delta']) / 100
+    st.header("2. Projection & Growth")
+    projectie_jaren = st.slider("Projection Years", 5, 30, value=st.session_state['projectie_jaren'])
+    omzet_groei = st.number_input("Base Growth Rate (%)", step=0.1, value=st.session_state['revenue_growth']) / 100
+    with st.expander("⚡️ Dynamic Growth Adjustment"):
+        dyn_groei_start = st.number_input("Start Year", min_value=1, value=st.session_state['dyn_groei_start'])
+        dyn_groei_delta = st.number_input("Correction (%)", step=0.1, value=st.session_state['dyn_groei_delta']) / 100
 
-    st.header("3. Marges")
-    basis_omzet = st.number_input("Basis Omzet", value=st.session_state['basis_omzet'])
-    basis_ebit_marge = st.number_input("Basis Marge %", step=0.5, value=st.session_state['ebit_marge']) / 100
-    with st.expander("Dynamische Marge"):
-        dyn_marge_start = st.number_input("Startjaar (Marge)", min_value=1, value=st.session_state['dyn_marge_start'])
-        dyn_marge_delta = st.number_input("Correctie Marge %", step=0.1, value=st.session_state['dyn_marge_delta']) / 100
+    st.header("3. Margins & Base")
+    basis_omzet = st.number_input("Base Revenue", value=st.session_state['basis_omzet'])
+    basis_ebit_marge = st.number_input("Base EBIT Margin (%)", step=0.5, value=st.session_state['ebit_marge']) / 100
+    with st.expander("⚡️ Dynamic Margin Adjustment"):
+        dyn_marge_start = st.number_input("Start Year (Margin)", min_value=1, value=st.session_state['dyn_marge_start'])
+        dyn_marge_delta = st.number_input("Correction Margin (%)", step=0.1, value=st.session_state['dyn_marge_delta']) / 100
     
-    invest_kapitaal_basis = st.number_input("Geïnv. Kapitaal", value=st.session_state['invested_cap'])
-    aantal_aandelen = st.number_input("Aandelen", value=st.session_state['shares'])
+    invest_kapitaal_basis = st.number_input("Invested Capital", value=st.session_state['invested_cap'])
+    aantal_aandelen = st.number_input("Shares Outstanding", value=st.session_state['shares'])
 
-    st.header("4. Efficiëntie")
-    sales_to_cap_target = st.number_input("S2C Ratio", 0.1, 20.0, step=0.01, format="%.2f", value=st.session_state['target_sales_to_cap'])
-    with st.expander("Dynamische Efficiëntie"):
-        dyn_s2c_start = st.number_input("Startjaar (S2C)", min_value=1, value=st.session_state['dyn_s2c_start'])
-        dyn_s2c_delta = st.number_input("Correctie S2C", step=0.01, format="%.2f", value=st.session_state['dyn_s2c_delta'])
+    st.header("4. Efficiency (Capital Intensity)")
+    sales_to_cap_target = st.number_input("Sales-to-Capital Ratio", 0.1, 20.0, step=0.01, format="%.2f", value=st.session_state['target_sales_to_cap'])
+    with st.expander("⚡️ Dynamic Efficiency"):
+        dyn_s2c_start = st.number_input("Start Year (S2C)", min_value=1, value=st.session_state['dyn_s2c_start'])
+        dyn_s2c_delta = st.number_input("Correction S2C", step=0.01, format="%.2f", value=st.session_state['dyn_s2c_delta'])
 
     st.header("5. Tax & WACC")
-    belastingtarief = st.number_input("Belasting %", step=1.0, value=st.session_state['tax_rate']) / 100
-    with st.expander("Dynamische Tax"):
-        dyn_tax_start = st.number_input("Startjaar (Tax)", min_value=1, value=st.session_state['dyn_tax_start'])
-        dyn_tax_delta = st.number_input("Correctie Tax %", step=0.1, value=st.session_state['dyn_tax_delta']) / 100
-    wacc = st.number_input("WACC %", step=0.1, value=st.session_state['wacc']) / 100
+    belastingtarief = st.number_input("Tax Rate (%)", step=1.0, value=st.session_state['tax_rate']) / 100
+    with st.expander("⚡️ Dynamic Tax"):
+        dyn_tax_start = st.number_input("Start Year (Tax)", min_value=1, value=st.session_state['dyn_tax_start'])
+        dyn_tax_delta = st.number_input("Correction Tax (%)", step=0.1, value=st.session_state['dyn_tax_delta']) / 100
+    wacc = st.number_input("WACC (%)", step=0.1, value=st.session_state['wacc']) / 100
 
-    st.header("6. Financiën")
-    schulden = st.number_input("Schuld", value=st.session_state['debt'])
-    kasmiddelen = st.number_input("Cash", value=st.session_state['cash'])
-    veiligheidsmarge = st.slider("Veiligheidsmarge %", 0, 50, value=st.session_state['margin_safety']) / 100
+    st.header("6. Financial Position")
+    schulden = st.number_input("Total Debt", value=st.session_state['debt'])
+    kasmiddelen = st.number_input("Cash & Equivalents", value=st.session_state['cash'])
+    veiligheidsmarge = st.slider("Margin of Safety (%)", 0, 50, value=st.session_state['margin_safety']) / 100
 
-    st.header("7. Terminal")
-    terminal_growth = st.number_input("Term. Groei %", step=0.1, value=st.session_state['term_growth']) / 100
-    terminal_roic = st.number_input("Term. ROIC %", step=0.5, value=st.session_state['term_roic']) / 100
+    st.header("7. Terminal Value")
+    terminal_growth = st.number_input("Terminal Growth (%)", step=0.1, value=st.session_state['term_growth']) / 100
+    terminal_roic = st.number_input("Terminal ROIC (%)", step=0.5, value=st.session_state['term_roic']) / 100
     
     st.markdown("---")
-    # DE TRIGGER
-    submit_button = st.form_submit_button("🔄 Bereken & Update Model")
+    # SUBMIT BUTTON
+    submit_button = st.form_submit_button("🔄 Calculate & Update Model")
 
-# --- VERWERKING (NA KLIK OP KNOP) ---
+# --- CALCULATION LOGIC ---
 huidige_koers = 0.0
 val_per_share = 0.0
 val_marge = 0.0
@@ -152,12 +171,12 @@ onderneming = 0
 equity = 0
 
 if submit_button:
-    # 1. Update Session State (zodat bij volgende rerun waarden blijven staan)
+    # 1. Update Session State
     st.session_state['bedrijfsnaam'] = bedrijfsnaam
     st.session_state['ticker'] = ticker_symbol
-    # ... (voor de volledigheid zou je ze allemaal kunnen updaten, maar form doet dit vaak impliciet)
+    # ... (other updates handled implicitly by form values)
 
-    # 2. KOERS OPHALEN
+    # 2. Get Stock Price
     if ticker_symbol:
         try:
             stock = yf.Ticker(ticker_symbol)
@@ -166,17 +185,19 @@ if submit_button:
                 huidige_koers = history['Close'].iloc[-1]
         except: pass
 
-    # 3. BEREKENING UITVOEREN
+    # 3. Perform DCF
     jaren = range(1, projectie_jaren + 1)
     data, discount_factors = [], []
     huidige_omzet, huidig_kapitaal = basis_omzet, invest_kapitaal_basis
 
     for jaar in jaren:
+        # Dynamic adjustments
         actuele_groei = omzet_groei + (dyn_groei_delta if jaar >= dyn_groei_start else 0)
         actuele_marge = basis_ebit_marge + (dyn_marge_delta if jaar >= dyn_marge_start else 0)
         actuele_tax = belastingtarief + (dyn_tax_delta if jaar >= dyn_tax_start else 0)
         actuele_s2c = sales_to_cap_target + (dyn_s2c_delta if jaar >= dyn_s2c_start else 0)
 
+        # Loop calculations
         huidige_omzet *= (1 + actuele_groei)
         ebit = huidige_omzet * actuele_marge
         nopat = ebit * (1 - actuele_tax)
@@ -186,9 +207,23 @@ if submit_button:
         fcff = nopat - inv
         dfactor = 1 / ((1 + wacc) ** jaar)
         discount_factors.append(dfactor)
-        data.append({"Jaar": jaar, "Omzet": huidige_omzet, "Gebruikte Groei": actuele_groei, "Gebruikte Marge": actuele_marge, "EBIT": ebit, "NOPAT": nopat, "Investering": inv, "FCFF": fcff, "PV FCFF": fcff * dfactor})
+        
+        # English keys for DataFrame
+        data.append({
+            "Year": jaar, 
+            "Revenue": huidige_omzet, 
+            "Used Growth": actuele_groei, 
+            "Used Margin": actuele_marge, 
+            "EBIT": ebit, 
+            "NOPAT": nopat, 
+            "Investment": inv, 
+            "FCFF": fcff, 
+            "PV FCFF": fcff * dfactor
+        })
 
     df = pd.DataFrame(data)
+    
+    # Terminal Value
     last_nopat = data[-1]["NOPAT"]
     term_nop = last_nopat * (1 + terminal_growth)
     reinv = terminal_growth / terminal_roic if terminal_roic > 0 else 0
@@ -203,58 +238,68 @@ if submit_button:
     val_marge = val_per_share * (1 - veiligheidsmarge)
     upside = (val_per_share - huidige_koers) / huidige_koers if huidige_koers > 0 else 0
 
-    # 4. SILENT SAVE
-    # We slaan de complete configuratie op als JSON in de sheet
+    # 4. Silent Save (Logs everything to Google Sheets in background)
     full_json_dump = json.dumps({
-        "bedrijfsnaam": bedrijfsnaam, "ticker": ticker_symbol, "projectie_jaren": projectie_jaren,
-        "basis_omzet": basis_omzet, "ebit_marge": basis_ebit_marge, "tax_rate": belastingtarief,
-        "invested_cap": invest_kapitaal_basis, "shares": aantal_aandelen, "target_sales_to_cap": sales_to_cap_target,
-        "revenue_growth": omzet_groei, "wacc": wacc, "debt": schulden, "cash": kasmiddelen,
-        "margin_safety": veiligheidsmarge, "term_growth": terminal_growth, "term_roic": terminal_roic,
-        "dyn_groei_start": dyn_groei_start, "dyn_groei_delta": dyn_groei_delta,
-        "dyn_marge_start": dyn_marge_start, "dyn_marge_delta": dyn_marge_delta,
-        "dyn_tax_start": dyn_tax_start, "dyn_tax_delta": dyn_tax_delta,
-        "dyn_s2c_start": dyn_s2c_start, "dyn_s2c_delta": dyn_s2c_delta
+        "company": bedrijfsnaam, "ticker": ticker_symbol, "years": projectie_jaren,
+        "base_rev": basis_omzet, "base_margin": basis_ebit_marge, "tax": belastingtarief,
+        "wacc": wacc, "growth": omzet_groei, "s2c": sales_to_cap_target
+        # Add more fields here if you want them in the dump
     })
     
     silent_save_to_hq(bedrijfsnaam, ticker_symbol, val_per_share, upside, full_json_dump)
 
-# --- DASHBOARD WEERGAVE ---
+# --- DASHBOARD UI ---
 st.title("📊 DCF Valuation Pro")
 
-# Als er nog niet op de knop is gedrukt, toon instructie
 if df.empty:
-    st.info("👈 Vul links de gegevens in en klik onderaan op **'Bereken & Update Model'** om de waardering te zien.")
-    st.stop() # Stop hier met laden van de rest van de pagina
+    st.info("👈 Enter company details on the left and click **'Calculate & Update Model'** to see the valuation.")
+    st.stop()
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Intrinsieke Waarde", f"€ {val_per_share:,.2f}")
-c2.metric(f"Na Marge ({int(veiligheidsmarge*100)}%)", f"€ {val_marge:,.2f}")
-c3.metric("Actuele Koers", f"{huidige_koers:.2f}" if huidige_koers>0 else "N/A")
-c4.metric("Potentieel", f"{upside:.1%}" if huidige_koers>0 else "N/A", delta_color="normal" if upside>0 else "inverse")
+c1.metric("Intrinsic Value", f"€ {val_per_share:,.2f}")
+c2.metric(f"After Margin ({int(veiligheidsmarge*100)}%)", f"€ {val_marge:,.2f}")
+c3.metric("Current Price", f"{huidige_koers:.2f}" if huidige_koers>0 else "N/A")
+c4.metric("Upside Potential", f"{upside:.1%}" if huidige_koers>0 else "N/A", delta_color="normal" if upside>0 else "inverse")
 
 st.divider()
-tab1, tab2, tab3 = st.tabs(["📉 Grafieken", "📋 Data", "💾 Download"])
+tab1, tab2, tab3 = st.tabs(["📉 Charts", "📋 Data", "💾 Download"])
 
 with tab1:
     cg1, cg2 = st.columns(2)
     with cg1:
-        fig_w = go.Figure(go.Waterfall(name="Waardering", orientation="v", measure=["relative", "relative", "total", "relative", "relative", "total"], x=["Expliciet", "Terminal", "EV", "Schuld", "Cash", "Equity"], y=[waarde_expl, pv_term, onderneming, -schulden, kasmiddelen, equity], connector={"line":{"color":"rgb(63, 63, 63)"}}, decreasing={"marker":{"color":"#EF553B"}}, increasing={"marker":{"color":"#00CC96"}}, totals={"marker":{"color":"#636EFA"}}))
-        fig_w.update_layout(title="Waardebrug", height=400)
+        # Waterfall Chart (English)
+        fig_w = go.Figure(go.Waterfall(
+            name="Valuation", orientation="v", 
+            measure=["relative", "relative", "total", "relative", "relative", "total"], 
+            x=["Explicit Period", "Terminal Value", "Enterprise Value", "Debt", "Cash", "Equity Value"], 
+            y=[waarde_expl, pv_term, onderneming, -schulden, kasmiddelen, equity], 
+            connector={"line":{"color":"rgb(63, 63, 63)"}}, 
+            decreasing={"marker":{"color":"#EF553B"}}, increasing={"marker":{"color":"#00CC96"}}, totals={"marker":{"color":"#636EFA"}}
+        ))
+        fig_w.update_layout(title="Valuation Bridge", height=400)
         st.plotly_chart(fig_w, use_container_width=True)
     with cg2:
+        # Trend Chart (English)
         fig_t = go.Figure()
-        fig_t.add_trace(go.Bar(x=df["Jaar"], y=df["FCFF"], name="FCFF", marker_color='rgba(55, 83, 109, 0.7)'))
-        fig_t.add_trace(go.Scatter(x=df["Jaar"], y=df["Gebruikte Marge"], name="EBIT Marge %", yaxis="y2", mode="lines+markers", line=dict(color='firebrick', width=2)))
-        fig_t.update_layout(title="Kasstroom & Marge", height=400, yaxis2=dict(overlaying="y", side="right", tickformat=".0%"), legend=dict(x=0, y=1.1, orientation="h"))
+        fig_t.add_trace(go.Bar(x=df["Year"], y=df["FCFF"], name="FCFF", marker_color='rgba(55, 83, 109, 0.7)'))
+        fig_t.add_trace(go.Scatter(x=df["Year"], y=df["Used Margin"], name="EBIT Margin %", yaxis="y2", mode="lines+markers", line=dict(color='firebrick', width=2)))
+        fig_t.update_layout(title="Cash Flow & Margin Evolution", height=400, yaxis2=dict(overlaying="y", side="right", tickformat=".0%"), legend=dict(x=0, y=1.1, orientation="h"))
         st.plotly_chart(fig_t, use_container_width=True)
 
 with tab2:
-    st.dataframe(df.style.format({"Omzet": "{:,.1f}", "EBIT": "{:,.1f}", "FCFF": "{:,.1f}", "Gebruikte Groei": "{:.1%}", "Gebruikte Marge": "{:.1%}"}))
+    st.write("The table shows the **actual used** percentages per year (including dynamic adjustments).")
+    # Formatting english columns
+    format_dict = {
+        "Revenue": "{:,.1f}", "EBIT": "{:,.1f}", "FCFF": "{:,.1f}", 
+        "Used Growth": "{:.1%}", "Used Margin": "{:.1%}"
+    }
+    st.dataframe(df.style.format(format_dict))
 
 with tab3:
-    st.write("### PDF Rapportage")
+    st.write("### PDF Report")
     pdf_in = {k: st.session_state[k] for k in defaults.keys() if "dyn_" not in k}
-    pdf_res = {"Waarde per aandeel": f"EUR {val_per_share:,.2f}", "Potentieel": f"{upside:.1%}" if huidige_koers > 0 else "N/A"}
+    pdf_res = {"Value per share": f"EUR {val_per_share:,.2f}", "Upside": f"{upside:.1%}" if huidige_koers > 0 else "N/A"}
+    
+    # Generate PDF
     pdf_d = create_pdf(bedrijfsnaam, analyse_datum, pdf_in, pdf_res, df)
-    st.download_button("📄 Download PDF", pdf_d, file_name=f"Report_{bedrijfsnaam}.pdf", mime="application/pdf")
+    st.download_button("📄 Download PDF Report", pdf_d, file_name=f"Report_{bedrijfsnaam}.pdf", mime="application/pdf")
