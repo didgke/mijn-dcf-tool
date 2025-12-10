@@ -4,3 +4,5 @@ numpy
 plotly
 yfinance
 fpdf
+gspread
+oauth2client
