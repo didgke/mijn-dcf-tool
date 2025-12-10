@@ -12,30 +12,33 @@ from oauth2client.service_account import ServiceAccountCredentials
 # --- CONFIGURATIE ---
 st.set_page_config(page_title="DCF Valuation Pro", layout="wide")
 
-# --- FUNCTIE: GOOGLE SHEETS OPSLAAN ---
-def save_to_google_sheets(bedrijfsnaam, ticker, waarde, omzet, marge, jaren):
+# --- FUNCTIE: GOOGLE SHEETS OPSLAAN (VERBETERD) ---
+def save_to_google_sheets(bedrijfsnaam, ticker, waarde, omzet, marge, jaren, groei, wacc):
     try:
-        # We halen de sleutel op uit de beveiligde omgeving van Streamlit
+        # 1. Verbinding maken
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        # We moeten de 'secrets' omzetten naar het formaat dat Google verwacht
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         
-        # Open de sheet
+        # 2. Sheet openen
         sheet = client.open("DCF_Bibliotheek").sheet1
         
-        # De rij die we gaan toevoegen
+        # 3. De Data voorbereiden (Alles naar tekst omzetten voor zekerheid)
+        # Let op de volgorde! Dit komt in Kolom A, B, C, D, etc.
         row = [
-            str(datetime.date.today()),
-            bedrijfsnaam,
-            f"€ {waarde:.2f}",
-            ticker,
-            f"€ {omzet:.1f}m",
-            f"{marge*100:.1f}%",
-            jaren
+            str(datetime.date.today()),      # Kolom A: Datum
+            str(bedrijfsnaam),               # Kolom B: Bedrijfsnaam
+            str(ticker),                     # Kolom C: Ticker
+            f"€ {waarde:.2f}",               # Kolom D: Waarde per aandeel
+            f"€ {omzet:.1f} mln",            # Kolom E: Omzet Basis
+            f"{marge*100:.1f}%",             # Kolom F: EBIT Marge
+            f"{groei*100:.1f}%",             # Kolom G: Groei
+            f"{wacc*100:.1f}%",              # Kolom H: WACC
+            str(jaren)                       # Kolom I: Projectieduur
         ]
         
+        # 4. Versturen
         sheet.append_row(row)
         return True
     except Exception as e:
@@ -253,6 +256,20 @@ with tab3:
     st.divider()
     st.write("### 📚 Bibliotheek (Google Sheets)")
     if st.button("☁️ Sla deze analyse op in de Cloud"):
-        res = save_to_google_sheets(bedrijfsnaam, ticker_symbol, val_per_share, basis_omzet, basis_ebit_marge, projectie_jaren)
-        if res is True: st.success(f"Opgeslagen in DCF_Bibliotheek!"); st.balloons()
-        else: st.error(f"Fout: {res}. Heb je de secrets ingesteld?")
+        # Hier roepen we de nieuwe functie aan met ALLE parameters
+        res = save_to_google_sheets(
+            bedrijfsnaam, 
+            ticker_symbol, 
+            val_per_share, 
+            basis_omzet, 
+            basis_ebit_marge, 
+            projectie_jaren,
+            omzet_groei,  # Toegevoegd
+            wacc          # Toegevoegd
+        )
+        
+        if res is True: 
+            st.success(f"Succes! '{bedrijfsnaam}' is opgeslagen in de bibliotheek.")
+            st.balloons()
+        else: 
+            st.error(f"Fout bij opslaan: {res}")
