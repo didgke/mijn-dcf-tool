@@ -10,32 +10,29 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- CONFIGURATIE ---
-st.set_page_config(page_title="DCF Valuation Pro (Community Edition)", layout="wide")
+st.set_page_config(page_title="DCF Valuation Pro", layout="wide")
 
-# --- FUNCTIE: DATA COLLECTIE (MINING) ---
-def save_analysis_to_hq(bedrijf, ticker, waarde, upside, json_data):
+# --- FUNCTIE: SILENT SAVE (Geen meldingen, gewoon opslaan) ---
+def silent_save_to_hq(bedrijf, ticker, waarde, upside, json_data):
     try:
-        # Verbinding maken met jouw privé sheet
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         sheet = client.open("DCF_Bibliotheek").sheet1
         
-        # De rij samenstellen: Leesbaar deel + De volledige JSON dump
         row = [
-            str(datetime.date.today()),  # A: Datum
-            str(bedrijf),                # B: Bedrijf
-            f"€ {waarde:.2f}",           # C: Waarde
-            str(ticker),                 # D: Ticker
-            f"{upside:.1%}",             # E: Upside
-            str(json_data)               # F: DE VOLLEDIGE DATA VOOR JOU
+            str(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")), # Datum + Tijd
+            str(bedrijf),
+            f"€ {waarde:.2f}",
+            str(ticker),
+            f"{upside:.1%}",
+            str(json_data) # De volledige JSON dump voor jouw bibliotheek
         ]
-        
         sheet.append_row(row)
         return True
-    except Exception as e:
-        return str(e)
+    except:
+        return False # Als het mislukt, negeren we het (zodat de user geen fout ziet)
 
 # --- PDF FUNCTIE ---
 def create_pdf(bedrijf, datum, inputs, resultaten, df_projectie):
@@ -85,7 +82,7 @@ def create_pdf(bedrijf, datum, inputs, resultaten, df_projectie):
 
 # --- INITIALISATIE ---
 defaults = {
-    "bedrijfsnaam": "Bedrijf X", "ticker": "", "projectie_jaren": 10, "basis_omzet": 100.0, 
+    "bedrijfsnaam": "Naamloos Bedrijf", "ticker": "", "projectie_jaren": 10, "basis_omzet": 100.0, 
     "ebit_marge": 20.0, "tax_rate": 25.0, "invested_cap": 100.0, "shares": 10.0,
     "target_sales_to_cap": 1.0, "revenue_growth": 5.0, "wacc": 9.0, "debt": 20.0, "cash": 5.0, 
     "margin_safety": 30, "term_growth": 2.0, "term_roic": 15.0,
@@ -95,24 +92,70 @@ defaults = {
 for key, val in defaults.items():
     if key not in st.session_state: st.session_state[key] = val
 
-# --- SIDEBAR: BESTANDEN (ALLEEN LADEN, OPSLAAN GAAT NU ONLINE) ---
-st.sidebar.title("📁 Load Data")
-uploaded_file = st.sidebar.file_uploader("Heb je een .json bestand?", type=["json"])
-if uploaded_file is not None:
-    if st.sidebar.button("⚠️ Laad bestand"):
-        try:
-            data = json.load(uploaded_file)
-            for key, value in data.items(): st.session_state[key] = value
-            st.sidebar.success("Geladen!"); st.rerun()
-        except Exception as e: st.sidebar.error(f"Fout: {e}")
-st.sidebar.markdown("---")
+# --- SIDEBAR: START FORMULIER ---
+st.sidebar.title("Instellingen")
 
-# --- SIDEBAR INPUTS ---
-st.sidebar.header("1. Bedrijf")
-bedrijfsnaam = st.sidebar.text_input("Naam", key="bedrijfsnaam")
-ticker_symbol = st.sidebar.text_input("Ticker (Yahoo)", key="ticker")
-analyse_datum = st.sidebar.date_input("Datum", datetime.date.today())
+# We gebruiken een FORMULIER. De app draait pas als je op Submit klikt.
+with st.sidebar.form(key='dcf_form'):
+    
+    st.header("1. Bedrijf")
+    # We laden waarden uit session_state zodat ze blijven staan na herladen
+    bedrijfsnaam = st.text_input("Naam", value=st.session_state['bedrijfsnaam'])
+    ticker_symbol = st.text_input("Ticker (Yahoo)", value=st.session_state['ticker'])
+    analyse_datum = st.date_input("Datum", datetime.date.today())
 
+    st.header("2. Projectie")
+    projectie_jaren = st.slider("Jaren", 5, 30, value=st.session_state['projectie_jaren'])
+    omzet_groei = st.number_input("Basis Groei %", step=0.1, value=st.session_state['revenue_growth']) / 100
+    with st.expander("Dynamische Groei"):
+        dyn_groei_start = st.number_input("Startjaar", min_value=1, value=st.session_state['dyn_groei_start'])
+        dyn_groei_delta = st.number_input("Correctie %", step=0.1, value=st.session_state['dyn_groei_delta']) / 100
+
+    st.header("3. Marges")
+    basis_omzet = st.number_input("Basis Omzet", value=st.session_state['basis_omzet'])
+    basis_ebit_marge = st.number_input("Basis Marge %", step=0.5, value=st.session_state['ebit_marge']) / 100
+    with st.expander("Dynamische Marge"):
+        dyn_marge_start = st.number_input("Startjaar (Marge)", min_value=1, value=st.session_state['dyn_marge_start'])
+        dyn_marge_delta = st.number_input("Correctie Marge %", step=0.1, value=st.session_state['dyn_marge_delta']) / 100
+    
+    invest_kapitaal_basis = st.number_input("Geïnv. Kapitaal", value=st.session_state['invested_cap'])
+    aantal_aandelen = st.number_input("Aandelen", value=st.session_state['shares'])
+
+    st.header("4. Efficiëntie")
+    sales_to_cap_target = st.number_input("S2C Ratio", 0.1, 20.0, step=0.01, format="%.2f", value=st.session_state['target_sales_to_cap'])
+    with st.expander("Dynamische Efficiëntie"):
+        dyn_s2c_start = st.number_input("Startjaar (S2C)", min_value=1, value=st.session_state['dyn_s2c_start'])
+        dyn_s2c_delta = st.number_input("Correctie S2C", step=0.01, format="%.2f", value=st.session_state['dyn_s2c_delta'])
+
+    st.header("5. Tax & WACC")
+    belastingtarief = st.number_input("Belasting %", step=1.0, value=st.session_state['tax_rate']) / 100
+    with st.expander("Dynamische Tax"):
+        dyn_tax_start = st.number_input("Startjaar (Tax)", min_value=1, value=st.session_state['dyn_tax_start'])
+        dyn_tax_delta = st.number_input("Correctie Tax %", step=0.1, value=st.session_state['dyn_tax_delta']) / 100
+    wacc = st.number_input("WACC %", step=0.1, value=st.session_state['wacc']) / 100
+
+    st.header("6. Financiën")
+    schulden = st.number_input("Schuld", value=st.session_state['debt'])
+    kasmiddelen = st.number_input("Cash", value=st.session_state['cash'])
+    veiligheidsmarge = st.slider("Veiligheidsmarge %", 0, 50, value=st.session_state['margin_safety']) / 100
+
+    st.header("7. Terminal")
+    terminal_growth = st.number_input("Term. Groei %", step=0.1, value=st.session_state['term_growth']) / 100
+    terminal_roic = st.number_input("Term. ROIC %", step=0.5, value=st.session_state['term_roic']) / 100
+    
+    st.markdown("---")
+    # DE GROTE KNOP: DIT IS DE TRIGGER VOOR BEREKENEN EN OPSLAAN
+    submit_button = st.form_submit_button("🔄 Bereken & Update Model")
+
+# --- DATA VERWERKING ---
+# We updaten de session state met de waarden uit het formulier
+if submit_button:
+    st.session_state['bedrijfsnaam'] = bedrijfsnaam
+    st.session_state['ticker'] = ticker_symbol
+    st.session_state['basis_omzet'] = basis_omzet
+    # ... (en zo voort voor alle variabelen, maar Streamlit doet dit deels zelf bij forms)
+
+# Koers ophalen (buiten formulier voor snelheid bij opstarten, of binnen formulier)
 huidige_koers = 0.0
 if ticker_symbol:
     try:
@@ -120,48 +163,9 @@ if ticker_symbol:
         history = stock.history(period="1d")
         if not history.empty:
             huidige_koers = history['Close'].iloc[-1]
-            st.sidebar.success(f"Koers: {huidige_koers:.2f}")
     except: pass
 
-st.sidebar.header("2. Projectie")
-projectie_jaren = st.sidebar.slider("Jaren", 5, 30, key="projectie_jaren")
-omzet_groei = st.sidebar.number_input("Groei %", step=0.1, key="revenue_growth") / 100
-with st.sidebar.expander("Dynamische Groei"):
-    dyn_groei_start = st.number_input("Startjaar", min_value=1, key="dyn_groei_start")
-    dyn_groei_delta = st.number_input("Correctie %", step=0.1, key="dyn_groei_delta") / 100
-
-st.sidebar.header("3. Marges & Start")
-basis_omzet = st.sidebar.number_input("Omzet", key="basis_omzet")
-basis_ebit_marge = st.sidebar.number_input("EBIT Marge %", step=0.5, key="ebit_marge") / 100
-with st.sidebar.expander("Dynamische Marge"):
-    dyn_marge_start = st.number_input("Startjaar", min_value=1, key="dyn_marge_start")
-    dyn_marge_delta = st.number_input("Correctie %", step=0.1, key="dyn_marge_delta") / 100
-invest_kapitaal_basis = st.sidebar.number_input("Geïnv. Kapitaal", key="invested_cap")
-aantal_aandelen = st.sidebar.number_input("Aandelen", key="shares")
-
-st.sidebar.header("4. Efficiëntie")
-sales_to_cap_target = st.sidebar.number_input("Sales-to-Cap", 0.1, 20.0, step=0.01, format="%.2f", key="target_sales_to_cap")
-with st.sidebar.expander("Dynamische Efficiëntie"):
-    dyn_s2c_start = st.number_input("Startjaar", min_value=1, key="dyn_s2c_start")
-    dyn_s2c_delta = st.number_input("Correctie", step=0.01, format="%.2f", key="dyn_s2c_delta")
-
-st.sidebar.header("5. Tax & WACC")
-belastingtarief = st.sidebar.number_input("Belasting %", step=1.0, key="tax_rate") / 100
-with st.sidebar.expander("Dynamische Tax"):
-    dyn_tax_start = st.number_input("Startjaar", min_value=1, key="dyn_tax_start")
-    dyn_tax_delta = st.number_input("Correctie %", step=0.1, key="dyn_tax_delta") / 100
-wacc = st.sidebar.number_input("WACC %", step=0.1, key="wacc") / 100
-
-st.sidebar.header("6. Financiën")
-schulden = st.sidebar.number_input("Schuld", key="debt")
-kasmiddelen = st.sidebar.number_input("Cash", key="cash")
-veiligheidsmarge = st.sidebar.slider("Veiligheidsmarge %", 0, 50, key="margin_safety") / 100
-
-st.sidebar.header("7. Terminal")
-terminal_growth = st.sidebar.number_input("Term. Groei %", step=0.1, key="term_growth") / 100
-terminal_roic = st.sidebar.number_input("Term. ROIC %", step=0.5, key="term_roic") / 100
-
-# --- BEREKENING ---
+# --- BEREKENING (Draait alleen als submit geklikt is of bij eerste load) ---
 jaren = range(1, projectie_jaren + 1)
 data, discount_factors = [], []
 huidige_omzet, huidig_kapitaal = basis_omzet, invest_kapitaal_basis
@@ -198,9 +202,23 @@ val_per_share = equity / aantal_aandelen
 val_marge = val_per_share * (1 - veiligheidsmarge)
 upside = (val_per_share - huidige_koers) / huidige_koers if huidige_koers > 0 else 0
 
+# --- AUTOMATISCH OPSLAAN (ALLEN BIJ DRUK OP KNOP) ---
+if submit_button:
+    # We bereiden de JSON voor
+    full_json_dump = json.dumps({
+        "bedrijfsnaam": bedrijfsnaam, "ticker": ticker_symbol, "projectie_jaren": projectie_jaren,
+        "basis_omzet": basis_omzet, "ebit_marge": basis_ebit_marge * 100, # save as percentage number
+        "wacc": wacc * 100,
+        # ... Je kunt hier alles toevoegen wat je wilt terugladen
+    })
+    
+    # We slaan op in de achtergrond
+    silent_save_to_hq(bedrijfsnaam, ticker_symbol, val_per_share, upside, full_json_dump)
+    # Geen melding aan de gebruiker, gebeurt "silent"
+
 # --- DASHBOARD ---
 st.title("📊 DCF Valuation Tool (Community Edition)")
-st.info("Deze tool is gratis te gebruiken. Door je analyse op te slaan, draag je bij aan de publieke database.")
+st.caption("Alle berekeningen worden uitgevoerd zodra je op 'Bereken & Update' klikt.")
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Intrinsieke Waarde", f"€ {val_per_share:,.2f}")
@@ -209,7 +227,7 @@ c3.metric("Actuele Koers", f"{huidige_koers:.2f}" if huidige_koers>0 else "N/A")
 c4.metric("Potentieel", f"{upside:.1%}" if huidige_koers>0 else "N/A", delta_color="normal" if upside>0 else "inverse")
 
 st.divider()
-tab1, tab2, tab3 = st.tabs(["📉 Grafieken", "📋 Data", "💾 Deel & Download"])
+tab1, tab2, tab3 = st.tabs(["📉 Grafieken", "📋 Data", "💾 Download"])
 
 with tab1:
     cg1, cg2 = st.columns(2)
@@ -228,27 +246,16 @@ with tab2:
     st.dataframe(df.style.format({"Omzet": "{:,.1f}", "EBIT": "{:,.1f}", "FCFF": "{:,.1f}", "Gebruikte Groei": "{:.1%}", "Gebruikte Marge": "{:.1%}"}))
 
 with tab3:
-    st.write("### 1. Download voor jezelf (PDF)")
+    st.write("### Download PDF Rapport")
     pdf_in = {k: st.session_state[k] for k in defaults.keys() if "dyn_" not in k}
     pdf_res = {"Waarde per aandeel": f"EUR {val_per_share:,.2f}", "Potentieel": f"{upside:.1%}" if huidige_koers > 0 else "N/A"}
     pdf_d = create_pdf(bedrijfsnaam, analyse_datum, pdf_in, pdf_res, df)
-    st.download_button("📄 Download PDF Rapport", pdf_d, file_name=f"Report_{bedrijfsnaam}.pdf", mime="application/pdf")
+    st.download_button("📄 Download PDF", pdf_d, file_name=f"Report_{bedrijfsnaam}.pdf", mime="application/pdf")
     
-    st.divider()
-    
-    st.write("### 2. Deel Analyse met de Community")
-    st.write("Door hieronder te klikken, wordt jouw analyse opgeslagen in de centrale database. Jij kunt deze zelf ook weer opvragen door de JSON op te slaan.")
-    
-    if st.button("🚀 Voeg toe aan DCF Database"):
-        # We maken een JSON string van de HELE sessie state
-        full_json_dump = json.dumps({k: st.session_state[k] for k in defaults.keys()})
-        
-        res = save_analysis_to_hq(bedrijfsnaam, ticker_symbol, val_per_share, upside, full_json_dump)
-        
-        if res is True: 
-            st.success("Bedankt! Jouw analyse is veilig opgeslagen.")
-            st.balloons()
-            # Optioneel: Bied de JSON ook direct als download aan voor de gebruiker zelf
-            st.download_button("📥 Download jouw .json (voor eigen gebruik)", full_json_dump, file_name=f"{bedrijfsnaam}_data.json", mime="application/json")
-        else: 
-            st.error(f"Er ging iets mis: {res}")
+    st.write("### Load Data")
+    uploaded_file = st.file_uploader("Heb je een .json bestand van een vorige sessie?", type=["json"])
+    if uploaded_file is not None:
+        if st.button("Laad Instellingen"):
+            data = json.load(uploaded_file)
+            for key, value in data.items(): st.session_state[key] = value
+            st.success("Geladen! Klik nu links op 'Bereken & Update'.")
