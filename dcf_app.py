@@ -51,9 +51,8 @@ def create_pdf(company, date, inputs, results, df_projectie):
     
     # Parameters Section
     pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, "2. Key Assumptions", ln=True); pdf.set_font("Arial", '', 9)
-    # Print simple list of inputs
     for k, v in inputs.items():
-        if "dyn_" not in k: # Skip internal dynamic keys for cleaner PDF
+        if "dyn_" not in k: 
             pdf.cell(90, 6, f"{k}: {v}", border=0); pdf.ln()
     pdf.ln(5)
     
@@ -65,7 +64,6 @@ def create_pdf(company, date, inputs, results, df_projectie):
     pdf.ln(); pdf.set_font("Arial", '', 7)
     
     for index, row in df_projectie.iterrows():
-        # Note: We use the English column names here matching the DataFrame below
         vals = [
             str(int(row['Year'])), 
             f"{row['Used Growth']*100:.1f}%", 
@@ -158,6 +156,9 @@ with st.sidebar.form(key='dcf_form'):
     st.markdown("---")
     # SUBMIT BUTTON
     submit_button = st.form_submit_button("🔄 Calculate & Update Model")
+    
+    # DISCLAIMER TOEVOEGING
+    st.caption("🔒 **Privacy Notice:** Inputs are anonymously saved to a community database for statistical analysis. No personal data is collected.")
 
 # --- CALCULATION LOGIC ---
 huidige_koers = 0.0
@@ -174,7 +175,7 @@ if submit_button:
     # 1. Update Session State
     st.session_state['bedrijfsnaam'] = bedrijfsnaam
     st.session_state['ticker'] = ticker_symbol
-    # ... (other updates handled implicitly by form values)
+    # ... (implicit update)
 
     # 2. Get Stock Price
     if ticker_symbol:
@@ -208,7 +209,6 @@ if submit_button:
         dfactor = 1 / ((1 + wacc) ** jaar)
         discount_factors.append(dfactor)
         
-        # English keys for DataFrame
         data.append({
             "Year": jaar, 
             "Revenue": huidige_omzet, 
@@ -238,12 +238,13 @@ if submit_button:
     val_marge = val_per_share * (1 - veiligheidsmarge)
     upside = (val_per_share - huidige_koers) / huidige_koers if huidige_koers > 0 else 0
 
-    # 4. Silent Save (Logs everything to Google Sheets in background)
+    # 4. Silent Save
     full_json_dump = json.dumps({
         "company": bedrijfsnaam, "ticker": ticker_symbol, "years": projectie_jaren,
         "base_rev": basis_omzet, "base_margin": basis_ebit_marge, "tax": belastingtarief,
-        "wacc": wacc, "growth": omzet_groei, "s2c": sales_to_cap_target
-        # Add more fields here if you want them in the dump
+        "wacc": wacc, "growth": omzet_groei, "s2c": sales_to_cap_target,
+        "dyn_groei_start": dyn_groei_start, "dyn_groei_delta": dyn_groei_delta,
+        # ... and all other params you want to save
     })
     
     silent_save_to_hq(bedrijfsnaam, ticker_symbol, val_per_share, upside, full_json_dump)
@@ -267,7 +268,6 @@ tab1, tab2, tab3 = st.tabs(["📉 Charts", "📋 Data", "💾 Download"])
 with tab1:
     cg1, cg2 = st.columns(2)
     with cg1:
-        # Waterfall Chart (English)
         fig_w = go.Figure(go.Waterfall(
             name="Valuation", orientation="v", 
             measure=["relative", "relative", "total", "relative", "relative", "total"], 
@@ -279,7 +279,6 @@ with tab1:
         fig_w.update_layout(title="Valuation Bridge", height=400)
         st.plotly_chart(fig_w, use_container_width=True)
     with cg2:
-        # Trend Chart (English)
         fig_t = go.Figure()
         fig_t.add_trace(go.Bar(x=df["Year"], y=df["FCFF"], name="FCFF", marker_color='rgba(55, 83, 109, 0.7)'))
         fig_t.add_trace(go.Scatter(x=df["Year"], y=df["Used Margin"], name="EBIT Margin %", yaxis="y2", mode="lines+markers", line=dict(color='firebrick', width=2)))
@@ -288,7 +287,6 @@ with tab1:
 
 with tab2:
     st.write("The table shows the **actual used** percentages per year (including dynamic adjustments).")
-    # Formatting english columns
     format_dict = {
         "Revenue": "{:,.1f}", "EBIT": "{:,.1f}", "FCFF": "{:,.1f}", 
         "Used Growth": "{:.1%}", "Used Margin": "{:.1%}"
@@ -300,6 +298,12 @@ with tab3:
     pdf_in = {k: st.session_state[k] for k in defaults.keys() if "dyn_" not in k}
     pdf_res = {"Value per share": f"EUR {val_per_share:,.2f}", "Upside": f"{upside:.1%}" if huidige_koers > 0 else "N/A"}
     
-    # Generate PDF
     pdf_d = create_pdf(bedrijfsnaam, analyse_datum, pdf_in, pdf_res, df)
     st.download_button("📄 Download PDF Report", pdf_d, file_name=f"Report_{bedrijfsnaam}.pdf", mime="application/pdf")
+    
+    st.write("### Save for later")
+    st.write("You can download the raw settings file (.json) to continue this analysis later.")
+    
+    # Download JSON
+    json_out = json.dumps({k: st.session_state[k] for k in defaults.keys()}, indent=4)
+    st.download_button("📥 Download Analysis (.json)", json_out, file_name=f"{bedrijfsnaam}_settings.json", mime="application/json")
