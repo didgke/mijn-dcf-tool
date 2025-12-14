@@ -7,6 +7,7 @@ import datetime
 import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import yfinance as yf  # <--- NIEUW: Yahoo Finance import
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="DCF Valuation Pro", layout="wide")
@@ -15,7 +16,7 @@ st.set_page_config(page_title="DCF Valuation Pro", layout="wide")
 def silent_save_to_hq(company, ticker, value, upside, json_data):
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        # Haalt credentials uit st.secrets (zorg dat secrets.toml correct is ingesteld)
+        # Zorg dat secrets.toml correct is ingesteld met gcp_service_account
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
@@ -32,7 +33,6 @@ def silent_save_to_hq(company, ticker, value, upside, json_data):
         sheet.append_row(row)
         return True
     except Exception as e:
-        # Faalt stil (of print error naar console voor debugging)
         print(f"Google Sheet save error: {e}")
         return False
 
@@ -115,8 +115,33 @@ with st.sidebar.form(key='dcf_form'):
     
     st.header("1. Company Profile")
     bedrijfsnaam = st.text_input("Company Name", value=st.session_state['bedrijfsnaam'])
-    ticker_symbol = st.text_input("Ticker (Optional)", value=st.session_state['ticker'])
-    huidige_koers_input = st.number_input("Current Share Price (€)", value=float(st.session_state['current_price']), step=0.5)
+    
+    # --- NIEUW: Ticker + Fetch Button ---
+    col_tick, col_btn = st.columns([0.65, 0.35])
+    with col_tick:
+        ticker_symbol = st.text_input("Ticker (Yahoo)", value=st.session_state['ticker'])
+    with col_btn:
+        st.write("") # Spacer voor uitlijning
+        st.write("") 
+        fetch_price = st.form_submit_button("🔎 Get Price")
+
+    # Logic om prijs op te halen als op de knop wordt gedrukt
+    if fetch_price and ticker_symbol:
+        try:
+            stock = yf.Ticker(ticker_symbol)
+            hist = stock.history(period="1d")
+            if not hist.empty:
+                new_price = hist['Close'].iloc[-1]
+                st.session_state['current_price'] = new_price
+                st.session_state['ticker'] = ticker_symbol
+                st.success(f"Found: {new_price:.2f}")
+                st.rerun()
+            else:
+                st.error("No data found")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    huidige_koers_input = st.number_input("Current Share Price", value=float(st.session_state['current_price']), step=0.5)
     analyse_datum = st.date_input("Analysis Date", datetime.date.today())
 
     st.header("2. Projection & Growth")
@@ -165,7 +190,6 @@ with st.sidebar.form(key='dcf_form'):
     # SUBMIT BUTTON
     submit_button = st.form_submit_button("🔄 Calculate & Update Model")
     
-    # Disclaimer aangepast naar Google Sheets context
     st.caption("🔒 **Privacy Notice:** Inputs are anonymously saved to a community database for statistical analysis.")
 
 # --- CALCULATION LOGIC ---
@@ -250,7 +274,7 @@ if submit_button:
     val_marge = val_per_share * (1 - veiligheidsmarge)
     upside = (val_per_share - huidige_koers) / huidige_koers if huidige_koers > 0 else 0
 
-    # 4. Silent Save to HQ (enkel Google Sheets)
+    # 4. Silent Save to HQ (Google Sheets)
     full_json_dump = json.dumps({
         "company": bedrijfsnaam, "ticker": ticker_symbol, "years": projectie_jaren,
         "base_rev": basis_omzet, "base_margin": basis_ebit_marge, "tax": belastingtarief,
@@ -276,7 +300,7 @@ if df.empty:
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Intrinsic Value", f"€ {val_per_share:,.2f}")
 c2.metric(f"After Margin ({int(veiligheidsmarge*100)}%)", f"€ {val_marge:,.2f}")
-c3.metric("Current Price (Input)", f"{huidige_koers:.2f}" if huidige_koers>0 else "N/A")
+c3.metric("Current Price", f"{huidige_koers:.2f}" if huidige_koers>0 else "N/A")
 c4.metric("Upside Potential", f"{upside:.1%}" if huidige_koers>0 else "N/A", delta_color="normal" if upside>0 else "inverse")
 
 st.divider()
