@@ -7,7 +7,7 @@ import datetime
 import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import yfinance as yf  # <--- NIEUW: Yahoo Finance import
+import yfinance as yf
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="DCF Valuation Pro", layout="wide")
@@ -116,16 +116,14 @@ with st.sidebar.form(key='dcf_form'):
     st.header("1. Company Profile")
     bedrijfsnaam = st.text_input("Company Name", value=st.session_state['bedrijfsnaam'])
     
-    # --- NIEUW: Ticker + Fetch Button ---
     col_tick, col_btn = st.columns([0.65, 0.35])
     with col_tick:
         ticker_symbol = st.text_input("Ticker (Yahoo)", value=st.session_state['ticker'])
     with col_btn:
-        st.write("") # Spacer voor uitlijning
+        st.write("") # Spacer
         st.write("") 
         fetch_price = st.form_submit_button("🔎 Get Price")
 
-    # Logic om prijs op te halen als op de knop wordt gedrukt
     if fetch_price and ticker_symbol:
         try:
             stock = yf.Ticker(ticker_symbol)
@@ -187,7 +185,6 @@ with st.sidebar.form(key='dcf_form'):
     terminal_roic = st.number_input("Terminal ROIC (%)", step=0.5, value=st.session_state['term_roic']) / 100
     
     st.markdown("---")
-    # SUBMIT BUTTON
     submit_button = st.form_submit_button("🔄 Calculate & Update Model")
     
     st.caption("🔒 **Privacy Notice:** Inputs are anonymously saved to a community database for statistical analysis.")
@@ -203,7 +200,6 @@ onderneming = 0
 equity = 0
 
 if submit_button:
-    # 1. Update Session State
     st.session_state['bedrijfsnaam'] = bedrijfsnaam
     st.session_state['ticker'] = ticker_symbol
     st.session_state['current_price'] = huidige_koers_input
@@ -211,31 +207,25 @@ if submit_button:
     
     huidige_koers = huidige_koers_input
 
-    # 3. Perform DCF
     jaren = range(1, projectie_jaren + 1)
     data, discount_factors = [], []
     huidige_omzet = basis_omzet
     huidig_kapitaal = invest_kapitaal_basis
 
     for jaar in jaren:
-        # Dynamic adjustments
         actuele_groei = omzet_groei + (dyn_groei_delta if jaar >= dyn_groei_start else 0)
         actuele_marge = basis_ebit_marge + (dyn_marge_delta if jaar >= dyn_marge_start else 0)
         actuele_tax = belastingtarief + (dyn_tax_delta if jaar >= dyn_tax_start else 0)
         actuele_s2c = sales_to_cap_target + (dyn_s2c_delta if jaar >= dyn_s2c_start else 0)
 
-        # Basic P&L
         huidige_omzet *= (1 + actuele_groei)
         ebit = huidige_omzet * actuele_marge
         nopat = ebit * (1 - actuele_tax)
         
-        # --- CAPITAL & INVESTMENT LOGIC ---
         if jaar == 1:
-            # MANUAL OVERRIDE FOR YEAR 1
             inv = initial_investment_input
             req_cap = huidig_kapitaal + inv
         else:
-            # STANDARD S2C DRIVER FOR YEAR 2+
             req_cap = huidige_omzet / actuele_s2c
             inv = req_cap - huidig_kapitaal
         
@@ -259,7 +249,6 @@ if submit_button:
 
     df = pd.DataFrame(data)
     
-    # Terminal Value
     last_nopat = data[-1]["NOPAT"]
     term_nop = last_nopat * (1 + terminal_growth)
     reinv = terminal_growth / terminal_roic if terminal_roic > 0 else 0
@@ -274,7 +263,6 @@ if submit_button:
     val_marge = val_per_share * (1 - veiligheidsmarge)
     upside = (val_per_share - huidige_koers) / huidige_koers if huidige_koers > 0 else 0
 
-    # 4. Silent Save to HQ (Google Sheets)
     full_json_dump = json.dumps({
         "company": bedrijfsnaam, "ticker": ticker_symbol, "years": projectie_jaren,
         "base_rev": basis_omzet, "base_margin": basis_ebit_marge, "tax": belastingtarief,
@@ -297,11 +285,19 @@ if df.empty:
     st.info("👈 Enter company details on the left and click **'Calculate & Update Model'** to see the valuation.")
     st.stop()
 
+# Row 1: Per Share Metrics
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Intrinsic Value", f"€ {val_per_share:,.2f}")
 c2.metric(f"After Margin ({int(veiligheidsmarge*100)}%)", f"€ {val_marge:,.2f}")
 c3.metric("Current Price", f"{huidige_koers:.2f}" if huidige_koers>0 else "N/A")
 c4.metric("Upside Potential", f"{upside:.1%}" if huidige_koers>0 else "N/A", delta_color="normal" if upside>0 else "inverse")
+
+# Row 2: Firm Value Metrics (TOEGEVOEGD)
+st.caption("Enterprise Value Components")
+ce1, ce2, ce3 = st.columns(3)
+ce1.metric("PV Projected Cash Flow", f"€ {waarde_expl:,.1f}")
+ce2.metric("PV Terminal Value", f"€ {pv_term:,.1f}")
+ce3.metric("Enterprise Value (Sum)", f"€ {onderneming:,.1f}")
 
 st.divider()
 tab1, tab2, tab3 = st.tabs(["📉 Charts", "📋 Data (Compare with Excel)", "💾 Download"])
