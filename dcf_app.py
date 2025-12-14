@@ -14,13 +14,11 @@ st.set_page_config(page_title="DCF Valuation Pro", layout="wide")
 # --- FUNCTION: SILENT SAVE (Google Sheets) ---
 def silent_save_to_hq(company, ticker, value, upside, json_data):
     try:
-        # Connect to Google Sheets using Streamlit Secrets
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        # Haalt credentials uit st.secrets (zorg dat secrets.toml correct is ingesteld)
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
-        
-        # Open the sheet (Make sure "DCF_Bibliotheek" exists and is shared with the client_email)
         sheet = client.open("DCF_Bibliotheek").sheet1
         
         row = [
@@ -34,8 +32,8 @@ def silent_save_to_hq(company, ticker, value, upside, json_data):
         sheet.append_row(row)
         return True
     except Exception as e:
-        # Uncomment for debugging if save fails
-        # print(f"Save Error: {e}") 
+        # Faalt stil (of print error naar console voor debugging)
+        print(f"Google Sheet save error: {e}")
         return False
 
 # --- FUNCTION: PDF GENERATION ---
@@ -167,7 +165,8 @@ with st.sidebar.form(key='dcf_form'):
     # SUBMIT BUTTON
     submit_button = st.form_submit_button("🔄 Calculate & Update Model")
     
-    st.caption("🔒 **Cloud Save:** Inputs are anonymously saved to the community database (Google Sheets).")
+    # Disclaimer aangepast naar Google Sheets context
+    st.caption("🔒 **Privacy Notice:** Inputs are anonymously saved to a community database for statistical analysis.")
 
 # --- CALCULATION LOGIC ---
 val_per_share = 0.0
@@ -251,7 +250,7 @@ if submit_button:
     val_marge = val_per_share * (1 - veiligheidsmarge)
     upside = (val_per_share - huidige_koers) / huidige_koers if huidige_koers > 0 else 0
 
-    # 4. Save to Google Sheets
+    # 4. Silent Save to HQ (enkel Google Sheets)
     full_json_dump = json.dumps({
         "company": bedrijfsnaam, "ticker": ticker_symbol, "years": projectie_jaren,
         "base_rev": basis_omzet, "base_margin": basis_ebit_marge, "tax": belastingtarief,
@@ -261,16 +260,14 @@ if submit_button:
         "dyn_groei_start": dyn_groei_start, "dyn_groei_delta": dyn_groei_delta,
     })
     
-    saved = silent_save_to_hq(bedrijfsnaam, ticker_symbol, val_per_share, upside, full_json_dump)
-    if saved:
-        st.toast("✅ Data saved to Cloud Database!")
+    silent_save_to_hq(bedrijfsnaam, ticker_symbol, val_per_share, upside, full_json_dump)
 
 else:
     huidige_koers = st.session_state['current_price']
     initial_investment_input = st.session_state['initial_investment']
 
 # --- DASHBOARD UI ---
-st.title("📊 DCF Valuation Pro (Online Edition)")
+st.title("📊 DCF Valuation Pro (Connected)")
 
 if df.empty:
     st.info("👈 Enter company details on the left and click **'Calculate & Update Model'** to see the valuation.")
@@ -283,7 +280,7 @@ c3.metric("Current Price (Input)", f"{huidige_koers:.2f}" if huidige_koers>0 els
 c4.metric("Upside Potential", f"{upside:.1%}" if huidige_koers>0 else "N/A", delta_color="normal" if upside>0 else "inverse")
 
 st.divider()
-tab1, tab2, tab3 = st.tabs(["📉 Charts", "📋 Data (Report)", "💾 Download"])
+tab1, tab2, tab3 = st.tabs(["📉 Charts", "📋 Data (Compare with Excel)", "💾 Download"])
 
 with tab1:
     cg1, cg2 = st.columns(2)
@@ -307,7 +304,8 @@ with tab1:
         st.plotly_chart(fig_t, use_container_width=True)
 
 with tab2:
-    st.write("This table matches the manual input structure (Investment Year 1 manually set).")
+    st.write("This table matches the improved structure.")
+    st.write("Check **Investment (Year 1)**: this matches your manual input.")
     
     display_cols = ["Year", "Revenue", "EBIT", "NOPAT", "Invested Capital", "Investment", "FCFF", "PV FCFF"]
     format_dict = {
