@@ -5,35 +5,35 @@ import plotly.graph_objects as go
 from fpdf import FPDF
 import datetime
 import json
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-import yfinance as yf
+import os
+import csv
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="DCF Valuation Pro", layout="wide")
 
-# --- FUNCTION: SILENT SAVE (Google Sheets) ---
-def silent_save_to_hq(company, ticker, value, upside, json_data):
+# --- FUNCTION: LOCAL SAVE (CSV) ---
+def save_to_local_csv(company, ticker, value, upside, json_data):
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        # Zorg dat secrets.toml correct is ingesteld met gcp_service_account
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
-        sheet = client.open("DCF_Bibliotheek").sheet1
+        file_name = "dcf_history.csv"
+        file_exists = os.path.isfile(file_name)
         
         row = [
             str(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             str(company),
-            f"€ {value:.2f}",
+            f"{value:.2f}",
             str(ticker),
             f"{upside:.1%}",
             str(json_data)
         ]
-        sheet.append_row(row)
+        
+        with open(file_name, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["Timestamp", "Company", "Value", "Ticker", "Upside", "Settings_JSON"])
+            writer.writerow(row)
         return True
     except Exception as e:
-        print(f"Google Sheet save error: {e}")
+        print(f"Save error: {e}")
         return False
 
 # --- FUNCTION: PDF GENERATION ---
@@ -115,79 +115,57 @@ with st.sidebar.form(key='dcf_form'):
     
     st.header("1. Company Profile")
     bedrijfsnaam = st.text_input("Company Name", value=st.session_state['bedrijfsnaam'])
-    
-    col_tick, col_btn = st.columns([0.65, 0.35])
-    with col_tick:
-        ticker_symbol = st.text_input("Ticker (Yahoo)", value=st.session_state['ticker'])
-    with col_btn:
-        st.write("") # Spacer
-        st.write("") 
-        fetch_price = st.form_submit_button("🔎 Get Price")
-
-    if fetch_price and ticker_symbol:
-        try:
-            stock = yf.Ticker(ticker_symbol)
-            hist = stock.history(period="1d")
-            if not hist.empty:
-                new_price = hist['Close'].iloc[-1]
-                st.session_state['current_price'] = new_price
-                st.session_state['ticker'] = ticker_symbol
-                st.success(f"Found: {new_price:.2f}")
-                st.rerun()
-            else:
-                st.error("No data found")
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-    huidige_koers_input = st.number_input("Current Share Price", value=float(st.session_state['current_price']), step=0.5)
+    ticker_symbol = st.text_input("Ticker (Optional)", value=st.session_state['ticker'])
+    huidige_koers_input = st.number_input("Current Share Price (€)", value=float(st.session_state['current_price']), step=0.5)
     analyse_datum = st.date_input("Analysis Date", datetime.date.today())
 
     st.header("2. Projection & Growth")
-    projectie_jaren = st.slider("Projection Years", 5, 30, value=st.session_state['projectie_jaren'])
-    omzet_groei = st.number_input("Base Growth Rate (%)", step=0.1, value=st.session_state['revenue_growth']) / 100
+    projectie_jaren = st.slider("Projection Years", 5, 30, value=int(st.session_state['projectie_jaren']))
+    omzet_groei = st.number_input("Base Growth Rate (%)", step=0.1, value=float(st.session_state['revenue_growth'])) / 100
     with st.expander("⚡️ Dynamic Growth Adjustment"):
-        dyn_groei_start = st.number_input("Start Year", min_value=1, value=st.session_state['dyn_groei_start'])
-        dyn_groei_delta = st.number_input("Correction (%)", step=0.1, value=st.session_state['dyn_groei_delta']) / 100
+        dyn_groei_start = st.number_input("Start Year", min_value=1, value=int(st.session_state['dyn_groei_start']))
+        dyn_groei_delta = st.number_input("Correction (%)", step=0.1, value=float(st.session_state['dyn_groei_delta'])) / 100
 
     st.header("3. Margins & Base")
-    basis_omzet = st.number_input("Base Revenue (Year 0)", value=st.session_state['basis_omzet'])
-    basis_ebit_marge = st.number_input("Base EBIT Margin (%)", step=0.1, value=st.session_state['ebit_marge']) / 100
+    basis_omzet = st.number_input("Base Revenue (Year 0)", value=float(st.session_state['basis_omzet']))
+    basis_ebit_marge = st.number_input("Base EBIT Margin (%)", step=0.1, value=float(st.session_state['ebit_marge'])) / 100
     with st.expander("⚡️ Dynamic Margin Adjustment"):
-        dyn_marge_start = st.number_input("Start Year (Margin)", min_value=1, value=st.session_state['dyn_marge_start'])
-        dyn_marge_delta = st.number_input("Correction Margin (%)", step=0.1, value=st.session_state['dyn_marge_delta']) / 100
+        dyn_marge_start = st.number_input("Start Year (Margin)", min_value=1, value=int(st.session_state['dyn_marge_start']))
+        dyn_marge_delta = st.number_input("Correction Margin (%)", step=0.1, value=float(st.session_state['dyn_marge_delta'])) / 100
     
-    invest_kapitaal_basis = st.number_input("Invested Capital (Year 0)", value=st.session_state['invested_cap'])
-    aantal_aandelen = st.number_input("Shares Outstanding (mln)", value=st.session_state['shares'])
+    invest_kapitaal_basis = st.number_input("Invested Capital (Year 0)", value=float(st.session_state['invested_cap']))
+    aantal_aandelen = st.number_input("Shares Outstanding (mln)", value=float(st.session_state['shares']))
 
     st.header("4. Efficiency & Investment")
-    st.info("The first year's investment is often manually set to bridge the base year and projection.")
-    initial_investment_input = st.number_input("Initial Growth Investment (Year 1)", value=st.session_state['initial_investment'])
+    st.info("Invested Capital Year 1 = Inv.Cap Year 0 + Initial Investment Year 0.")
+    # Aangepast label om duidelijk te maken dat dit bij Jaar 0 hoort
+    initial_investment_input = st.number_input("Initial Growth Investment (Year 0)", value=float(st.session_state['initial_investment']))
     
-    sales_to_cap_target = st.number_input("Sales-to-Capital Ratio (Year 2+)", 0.1, 20.0, step=0.01, format="%.2f", value=st.session_state['target_sales_to_cap'])
+    sales_to_cap_target = st.number_input("Sales-to-Capital Ratio (Year 2+)", 0.1, 20.0, step=0.01, format="%.2f", value=float(st.session_state['target_sales_to_cap']))
     with st.expander("⚡️ Dynamic Efficiency"):
-        dyn_s2c_start = st.number_input("Start Year (S2C)", min_value=1, value=st.session_state['dyn_s2c_start'])
-        dyn_s2c_delta = st.number_input("Correction S2C", step=0.01, format="%.2f", value=st.session_state['dyn_s2c_delta'])
+        dyn_s2c_start = st.number_input("Start Year (S2C)", min_value=1, value=int(st.session_state['dyn_s2c_start']))
+        dyn_s2c_delta = st.number_input("Correction S2C", step=0.01, format="%.2f", value=float(st.session_state['dyn_s2c_delta']))
 
     st.header("5. Tax & WACC")
-    belastingtarief = st.number_input("Tax Rate (%)", step=0.1, value=st.session_state['tax_rate']) / 100
+    belastingtarief = st.number_input("Tax Rate (%)", step=0.1, value=float(st.session_state['tax_rate'])) / 100
     with st.expander("⚡️ Dynamic Tax"):
-        dyn_tax_start = st.number_input("Start Year (Tax)", min_value=1, value=st.session_state['dyn_tax_start'])
-        dyn_tax_delta = st.number_input("Correction Tax (%)", step=0.1, value=st.session_state['dyn_tax_delta']) / 100
-    wacc = st.number_input("WACC (%)", step=0.1, value=st.session_state['wacc']) / 100
+        dyn_tax_start = st.number_input("Start Year (Tax)", min_value=1, value=int(st.session_state['dyn_tax_start']))
+        dyn_tax_delta = st.number_input("Correction Tax (%)", step=0.1, value=float(st.session_state['dyn_tax_delta'])) / 100
+    wacc = st.number_input("WACC (%)", step=0.1, value=float(st.session_state['wacc'])) / 100
 
     st.header("6. Financial Position")
-    schulden = st.number_input("Total Debt", value=st.session_state['debt'])
-    kasmiddelen = st.number_input("Cash & Equivalents", value=st.session_state['cash'])
-    veiligheidsmarge = st.slider("Margin of Safety (%)", 0, 50, value=st.session_state['margin_safety']) / 100
+    schulden = st.number_input("Total Debt", value=float(st.session_state['debt']))
+    kasmiddelen = st.number_input("Cash & Equivalents", value=float(st.session_state['cash']))
+    
+    veiligheidsmarge = st.slider("Margin of Safety (%)", 0, 50, value=int(st.session_state['margin_safety']), step=1) / 100
 
     st.header("7. Terminal Value")
-    terminal_growth = st.number_input("Terminal Growth (%)", step=0.1, value=st.session_state['term_growth']) / 100
-    terminal_roic = st.number_input("Terminal ROIC (%)", step=0.5, value=st.session_state['term_roic']) / 100
+    terminal_growth = st.number_input("Terminal Growth (%)", step=0.1, value=float(st.session_state['term_growth'])) / 100
+    terminal_roic = st.number_input("Terminal ROIC (%)", step=0.5, value=float(st.session_state['term_roic'])) / 100
     
     st.markdown("---")
+    # SUBMIT BUTTON
     submit_button = st.form_submit_button("🔄 Calculate & Update Model")
-    
-    st.caption("🔒 **Privacy Notice:** Inputs are anonymously saved to a community database for statistical analysis.")
 
 # --- CALCULATION LOGIC ---
 val_per_share = 0.0
@@ -200,86 +178,129 @@ onderneming = 0
 equity = 0
 
 if submit_button:
+    # --- 1. UPDATE SESSION STATE ---
     st.session_state['bedrijfsnaam'] = bedrijfsnaam
     st.session_state['ticker'] = ticker_symbol
     st.session_state['current_price'] = huidige_koers_input
+    st.session_state['projectie_jaren'] = projectie_jaren
+    st.session_state['basis_omzet'] = basis_omzet
+    st.session_state['invested_cap'] = invest_kapitaal_basis
+    st.session_state['shares'] = aantal_aandelen
     st.session_state['initial_investment'] = initial_investment_input
+    st.session_state['target_sales_to_cap'] = sales_to_cap_target
+    st.session_state['debt'] = schulden
+    st.session_state['cash'] = kasmiddelen
+    st.session_state['revenue_growth'] = omzet_groei * 100
+    st.session_state['ebit_marge'] = basis_ebit_marge * 100
+    st.session_state['tax_rate'] = belastingtarief * 100
+    st.session_state['wacc'] = wacc * 100
+    st.session_state['margin_safety'] = veiligheidsmarge * 100
+    st.session_state['term_growth'] = terminal_growth * 100
+    st.session_state['term_roic'] = terminal_roic * 100
+    st.session_state['dyn_groei_start'] = dyn_groei_start
+    st.session_state['dyn_groei_delta'] = dyn_groei_delta * 100
+    st.session_state['dyn_marge_start'] = dyn_marge_start
+    st.session_state['dyn_marge_delta'] = dyn_marge_delta * 100
+    st.session_state['dyn_tax_start'] = dyn_tax_start
+    st.session_state['dyn_tax_delta'] = dyn_tax_delta * 100
+    st.session_state['dyn_s2c_start'] = dyn_s2c_start
+    st.session_state['dyn_s2c_delta'] = dyn_s2c_delta
     
     huidige_koers = huidige_koers_input
 
+    # --- 2. PERFORM DCF (UPDATED LOGIC) ---
     jaren = range(1, projectie_jaren + 1)
     data, discount_factors = [], []
+    
+    # SETUP JAAR 0 WAARDEN
     huidige_omzet = basis_omzet
-    huidig_kapitaal = invest_kapitaal_basis
+    # Kapitaal Jaar 1 is gebaseerd op Start Kapitaal + Investering in Jaar 0
+    huidig_kapitaal = invest_kapitaal_basis + initial_investment_input
 
     for jaar in jaren:
-        actuele_groei = omzet_groei + (dyn_groei_delta if jaar >= dyn_groei_start else 0)
+        # Bepaal groeipercentages en inputs voor DIT jaar
+        groei_percentage_nu = omzet_groei + (dyn_groei_delta if jaar >= dyn_groei_start else 0)
+        
+        # Bepaal groeipercentages voor VOLGEND jaar (voor investeringsberekening)
+        if jaar < projectie_jaren:
+            groei_percentage_volgend = omzet_groei + (dyn_groei_delta if (jaar + 1) >= dyn_groei_start else 0)
+        else:
+            # Voor het laatste jaar gebruiken we de terminal growth om de volgende omzet in te schatten
+            groei_percentage_volgend = terminal_growth
+
         actuele_marge = basis_ebit_marge + (dyn_marge_delta if jaar >= dyn_marge_start else 0)
         actuele_tax = belastingtarief + (dyn_tax_delta if jaar >= dyn_tax_start else 0)
         actuele_s2c = sales_to_cap_target + (dyn_s2c_delta if jaar >= dyn_s2c_start else 0)
 
-        huidige_omzet *= (1 + actuele_groei)
-        ebit = huidige_omzet * actuele_marge
+        # 1. Omzet stap
+        omzet_dit_jaar = huidige_omzet * (1 + groei_percentage_nu)
+        
+        # 2. Winst stap
+        ebit = omzet_dit_jaar * actuele_marge
         nopat = ebit * (1 - actuele_tax)
         
-        if jaar == 1:
-            inv = initial_investment_input
-            req_cap = huidig_kapitaal + inv
-        else:
-            req_cap = huidige_omzet / actuele_s2c
-            inv = req_cap - huidig_kapitaal
+        # 3. Investering stap (FORWARD LOOKING)
+        # "Groeiinvestering vanaf jaar 1 bereken je door de jaar omzet van jaar 1 af te trekken van jaar 2"
+        omzet_volgend_jaar = omzet_dit_jaar * (1 + groei_percentage_volgend)
+        delta_omzet = omzet_volgend_jaar - omzet_dit_jaar
         
-        huidig_kapitaal = req_cap
+        if actuele_s2c != 0:
+            inv = delta_omzet / actuele_s2c
+        else:
+            inv = 0
+        
+        # 4. Cashflow stap
         fcff = nopat - inv
         dfactor = 1 / ((1 + wacc) ** jaar)
         discount_factors.append(dfactor)
         
         data.append({
             "Year": jaar, 
-            "Revenue": huidige_omzet, 
+            "Revenue": omzet_dit_jaar, 
             "EBIT": ebit, 
             "NOPAT": nopat, 
-            "Invested Capital": req_cap,
+            # Huidig kapitaal is wat we aan het begin van het jaar hadden (vorige cap + vorige inv)
+            "Invested Capital": huidig_kapitaal, 
             "Investment": inv,
             "FCFF": fcff, 
-            "PV FCFF": fcff * dfactor,
-            "Used Growth": actuele_groei, 
-            "Used Margin": actuele_marge
+            "PV FCFF": fcff * dfactor
         })
+
+        # Update variabelen voor volgende loop
+        # Het kapitaal voor volgend jaar = kapitaal dit jaar + investering dit jaar
+        huidig_kapitaal += inv
+        huidige_omzet = omzet_dit_jaar
 
     df = pd.DataFrame(data)
     
-    last_nopat = data[-1]["NOPAT"]
-    term_nop = last_nopat * (1 + terminal_growth)
-    reinv = terminal_growth / terminal_roic if terminal_roic > 0 else 0
-    term_fcff = term_nop * (1 - reinv)
-    term_val = term_fcff / (wacc - terminal_growth)
-    pv_term = term_val * discount_factors[-1]
+    # Terminal Value
+    if not df.empty:
+        last_nopat = data[-1]["NOPAT"]
+        term_nop = last_nopat * (1 + terminal_growth)
+        
+        # Voor TV gebruiken we vaak return on new invested capital (RONIC/ROIC)
+        reinv_rate = terminal_growth / terminal_roic if terminal_roic > 0 else 0
+        term_fcff = term_nop * (1 - reinv_rate)
+        
+        term_val = term_fcff / (wacc - terminal_growth)
+        pv_term = term_val * discount_factors[-1]
 
-    waarde_expl = df["PV FCFF"].sum()
-    onderneming = waarde_expl + pv_term
-    equity = onderneming - schulden + kasmiddelen
-    val_per_share = equity / aantal_aandelen
-    val_marge = val_per_share * (1 - veiligheidsmarge)
-    upside = (val_per_share - huidige_koers) / huidige_koers if huidige_koers > 0 else 0
+        waarde_expl = df["PV FCFF"].sum()
+        onderneming = waarde_expl + pv_term
+        equity = onderneming - schulden + kasmiddelen
+        val_per_share = equity / aantal_aandelen
+        val_marge = val_per_share * (1 - veiligheidsmarge)
+        upside = (val_per_share - huidige_koers) / huidige_koers if huidige_koers > 0 else 0
 
-    full_json_dump = json.dumps({
-        "company": bedrijfsnaam, "ticker": ticker_symbol, "years": projectie_jaren,
-        "base_rev": basis_omzet, "base_margin": basis_ebit_marge, "tax": belastingtarief,
-        "wacc": wacc, "growth": omzet_groei, "s2c": sales_to_cap_target,
-        "initial_investment": initial_investment_input,
-        "current_price": huidige_koers,
-        "dyn_groei_start": dyn_groei_start, "dyn_groei_delta": dyn_groei_delta,
-    })
-    
-    silent_save_to_hq(bedrijfsnaam, ticker_symbol, val_per_share, upside, full_json_dump)
+        # Save results
+        full_json_dump = json.dumps({k: st.session_state[k] for k in defaults.keys()}, indent=4)
+        save_to_local_csv(bedrijfsnaam, ticker_symbol, val_per_share, upside, full_json_dump)
 
 else:
     huidige_koers = st.session_state['current_price']
-    initial_investment_input = st.session_state['initial_investment']
 
 # --- DASHBOARD UI ---
-st.title("📊 DCF Valuation Pro (Connected)")
+st.title("📊 DCF Valuation Pro (Offline)")
 
 if df.empty:
     st.info("👈 Enter company details on the left and click **'Calculate & Update Model'** to see the valuation.")
@@ -289,10 +310,10 @@ if df.empty:
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Intrinsic Value", f"€ {val_per_share:,.2f}")
 c2.metric(f"After Margin ({int(veiligheidsmarge*100)}%)", f"€ {val_marge:,.2f}")
-c3.metric("Current Price", f"{huidige_koers:.2f}" if huidige_koers>0 else "N/A")
+c3.metric("Current Price (Input)", f"{huidige_koers:.2f}" if huidige_koers>0 else "N/A")
 c4.metric("Upside Potential", f"{upside:.1%}" if huidige_koers>0 else "N/A", delta_color="normal" if upside>0 else "inverse")
 
-# Row 2: Firm Value Metrics (TOEGEVOEGD)
+# Row 2: Firm Value Metrics
 st.caption("Enterprise Value Components")
 ce1, ce2, ce3 = st.columns(3)
 ce1.metric("PV Projected Cash Flow", f"€ {waarde_expl:,.1f}")
@@ -324,8 +345,7 @@ with tab1:
         st.plotly_chart(fig_t, use_container_width=True)
 
 with tab2:
-    st.write("This table matches the improved structure.")
-    st.write("Check **Investment (Year 1)**: this matches your manual input.")
+    st.write("Calculations: Inv.Capital Year N = Inv.Capital Year N-1 + Investment Year N-1. Investment is based on Future Growth (Sales N+1 - Sales N).")
     
     display_cols = ["Year", "Revenue", "EBIT", "NOPAT", "Invested Capital", "Investment", "FCFF", "PV FCFF"]
     format_dict = {
@@ -337,6 +357,7 @@ with tab2:
 
 with tab3:
     st.write("### PDF Report")
+    # PDF gebruikt de opgeslagen sessie waarden
     pdf_in = {k: st.session_state[k] for k in defaults.keys() if "dyn_" not in k}
     pdf_res = {"Value per share": f"EUR {val_per_share:,.2f}", "Upside": f"{upside:.1%}" if huidige_koers > 0 else "N/A"}
     
